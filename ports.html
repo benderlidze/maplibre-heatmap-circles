@@ -1,0 +1,304 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <title>Create a heatmap layer</title>
+    <meta property="og:description" content="Visualize earthquake frequency by location using a heatmap layer." />
+    <meta charset='utf-8'>
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <link rel='stylesheet' href='https://unpkg.com/maplibre-gl@5.0.0/dist/maplibre-gl.css' />
+    <script src='https://unpkg.com/maplibre-gl@5.0.0/dist/maplibre-gl.js'></script>
+    <style>
+        body {
+            margin: 0;
+            padding: 0;
+        }
+
+        html,
+        body,
+        #map {
+            height: 100%;
+        }
+    </style>
+</head>
+
+<body>
+    <div id="map"></div>
+
+    <script>
+        const map = new maplibregl.Map({
+            container: 'map',
+            style: {
+                version: 8,
+                sources: {
+                    'cartodb': {
+                        type: 'raster',
+                        tiles: [
+                            'https://cartodb-basemaps-a.global.ssl.fastly.net/light_all/{z}/{x}/{y}.png'
+                        ],
+                        tileSize: 256,
+                        attribution: '© CartoDB © OpenStreetMap contributors'
+                    }
+                },
+                layers: [{
+                    id: 'cartodb',
+                    type: 'raster',
+                    source: 'cartodb',
+                    minzoom: 0,
+                    maxzoom: 19
+                }]
+            },
+            center: { lng: -98.76624028679453, lat: 39.259228107009136 },
+            zoom: 4
+        });
+
+        map.on('load', async () => {
+
+            const dataUrl = new URLSearchParams(window.location.search).get('data');
+            const dataFileName = dataUrl ? dataUrl : 'data.json';
+
+            const response = await fetch(dataFileName);
+            const { data } = await response.json();
+
+            // Function to create a circle given center point and radius in km
+            function createGeoCircle(center, radiusKm, points = 64) {
+                const coords = {
+                    type: 'Feature',
+                    geometry: {
+                        type: 'Polygon',
+                        coordinates: [[]]
+                    }
+                };
+
+                const km = radiusKm;
+                const radius = km * 0.0089932; // Convert km to degrees (approximately)
+
+                for (let i = 0; i < points; i++) {
+                    const degree = (i * 360) / points;
+                    const radian = degree * Math.PI / 180;
+                    const lat = center[1] + (radius * Math.cos(radian));
+                    const lon = center[0] + (radius * Math.sin(radian) / Math.cos(center[1] * Math.PI / 180));
+                    coords.geometry.coordinates[0].push([lon, lat]);
+                }
+                // Close the circle
+                coords.geometry.coordinates[0].push(coords.geometry.coordinates[0][0]);
+
+                return coords;
+            }
+
+            const counts = data.map(d => d.doc_count);
+            const minCount = Math.min(...counts);
+            const maxCount = Math.max(...counts);
+
+            // Create circles features
+            const circles = {
+                type: 'FeatureCollection',
+                features: data.map(d => {
+                    const radius = 1 + ((d.doc_count - minCount) / (maxCount - minCount)) * 99; // Scale 1-100km
+                    return {
+                        ...createGeoCircle([d.location.lon, d.location.lat], radius),
+                        properties: {
+                            doc_count: d.doc_count,
+                            shipments: d.shipments,
+                            radius_km: radius
+                        }
+                    };
+                })
+            };
+
+            const centers = {
+                type: 'FeatureCollection',
+                features: data.map(d => ({
+                    type: 'Feature',
+                    geometry: {
+                        type: 'Point',
+                        coordinates: [d.location.lon, d.location.lat]
+                    },
+                    properties: {
+                        doc_count: d.doc_count,
+                        shipments: d.shipments
+                    }
+                }))
+            }
+
+
+            Promise.all([
+                fetch('entry-ports.json'),
+                fetch('exit-ports.json')
+            ])
+                .then(responses => {
+                    return Promise.all(responses.map(res => res.json()));
+                })
+                .then(([entryPorts, exitPorts]) => {
+                    console.log('entryPorts:', entryPorts);
+                    console.log('exitPorts:', exitPorts);
+
+                    const entryPortsGEO = entryPorts.data.map(port => {
+                        const { lat, lon } = port.location
+                        return {
+                            type: 'Feature',
+                            geometry: {
+                                type: 'Point',
+                                coordinates: [lon, lat]
+                            }
+                        }
+                    });
+
+                    const exitPortsGEO = exitPorts.data.map(port => {
+                        const { lat, lon } = port.location
+                        return {
+                            type: 'Feature',
+                            geometry: {
+                                type: 'Point',
+                                coordinates: [lon, lat]
+                            }
+                        }
+                    });
+
+                    map.getSource('entry-ports').setData({
+                        "type": "FeatureCollection",
+                        "features": entryPortsGEO
+                    });
+
+                    map.getSource('exit-ports').setData({
+                        "type": "FeatureCollection",
+                        "features": exitPortsGEO
+                    });
+
+                })
+                .catch(err => {
+                    console.error('Failed to load port data:', err);
+                });
+
+            // Add source for circles
+            map.addSource('shipments-circles', {
+                'type': 'geojson',
+                'data': circles
+            });
+
+            // Add source for circles
+            map.addSource('earthquakes', {
+                'type': 'geojson',
+                'data': centers
+            });
+
+
+            map.addLayer({
+                'id': 'earthquakes-heat',
+                'type': 'heatmap',
+                'source': 'earthquakes',
+                'maxzoom': 9,
+                'paint': {
+                    'heatmap-weight': [
+                        'interpolate',
+                        ['linear'],
+                        ['get', 'shipments'],
+                        0,
+                        0,
+                        6,
+                        1
+                    ],
+                    'heatmap-intensity': [
+                        'interpolate',
+                        ['linear'],
+                        ['zoom'],
+                        0,
+                        1,
+                        9,
+                        3
+                    ],
+                    // Reversed color ramp
+                    'heatmap-color': [
+                        'interpolate',
+                        ['linear'],
+                        ['heatmap-density'],
+                        0,
+                        'rgba(0,78,102,0)',  // #004e66 with 0 opacity
+                        0.2,
+                        '#004e66',           // Start with dark blue
+                        0.4,
+                        '#0f4e6e',          // Intermediate color
+                        0.6,
+                        '#1c7490',          // Intermediate color
+                        0.8,
+                        '#289bbf',          // Intermediate color
+                        1,
+                        '#34c1ef'           // End with light blue
+                    ],
+                    'heatmap-radius': [
+                        'interpolate',
+                        ['linear'],
+                        ['zoom'],
+                        0,
+                        2,
+                        9,
+                        20
+                    ],
+                    'heatmap-opacity': [
+                        'interpolate',
+                        ['linear'],
+                        ['zoom'],
+                        7,
+                        1,
+                        9,
+                        0
+                    ]
+                }
+            });
+
+
+            // Add circle layer as polygons
+            map.addLayer({
+                'id': 'shipments-circles',
+                'type': 'fill',
+                'source': 'shipments-circles',
+                'paint': {
+                    'fill-color': 'rgba(0, 78, 102, 0.1)',
+                    'fill-outline-color': 'rgba(0, 78, 102, 0.5)'
+                }
+            });
+
+            map.addSource('entry-ports', {
+                'type': 'geojson',
+                'data': {
+                    "type": "FeatureCollection",
+                    "features": []
+                }
+            });
+            map.addLayer({
+                'id': 'entry-ports-red',
+                'type': 'circle',
+                'source': 'entry-ports',
+                'paint': {
+                    'circle-radius': 8,
+                    'circle-color': 'blue',
+                    'circle-stroke-color': 'white',
+                    'circle-stroke-width': 3
+                }
+            });
+
+            map.addSource('exit-ports', {
+                'type': 'geojson',
+                'data': {
+                    "type": "FeatureCollection",
+                    "features": []
+                }
+            });
+            map.addLayer({
+                'id': 'exit-ports-red',
+                'type': 'circle',
+                'source': 'exit-ports',
+                'paint': {
+                    'circle-radius': 8,
+                    'circle-color': 'green',
+                    'circle-stroke-color': 'white',
+                    'circle-stroke-width': 3
+                }
+            });
+
+
+        });
+    </script>
+</body>
+
+</html>
