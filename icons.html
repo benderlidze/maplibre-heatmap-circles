@@ -279,7 +279,7 @@
           
 
 
-            const entryImage = await map.loadImage('icons/ship.png');
+            const entryImage = await map.loadImage('icons/in.png');
             map.addImage('entry', entryImage.data);
             map.addLayer({
                 'id': 'entry-icons',
@@ -287,14 +287,14 @@
                 'source': 'entry-ports',
                 'layout': {
                     'icon-image': 'entry',
-                    'icon-size': 0.5,
+                    'icon-size': 0.1,
                     'icon-allow-overlap': true
 
                 }
             });
 
 
-            const exitImage = await map.loadImage('icons/ship2.png');
+            const exitImage = await map.loadImage('icons/out.png');
             map.addImage('exit', exitImage.data);
             map.addLayer({
                 'id': 'exit-icons',
